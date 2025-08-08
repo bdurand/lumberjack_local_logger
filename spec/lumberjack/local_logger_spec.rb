@@ -6,10 +6,18 @@ RSpec.describe Lumberjack::LocalLogger do
   let(:out) { StringIO.new }
   let(:parent_logger) { Lumberjack::Logger.new(out, level: :info) }
 
-  describe "level" do
+  describe "#parent_logger" do
+    let(:logger) { Lumberjack::LocalLogger.new(parent_logger) }
+
+    it "returns the parent logger" do
+      expect(logger.parent_logger).to eq(parent_logger)
+    end
+  end
+
+  describe "#level" do
     let(:logger) { Lumberjack::LocalLogger.new(parent_logger, level: :debug) }
 
-    it "can override the parent logger's level" do
+    it "can override the parent logger's level with the constructor value" do
       expect(logger.level).to eq(Logger::DEBUG)
       expect(parent_logger.level).to eq(Logger::INFO)
     end
@@ -45,6 +53,17 @@ RSpec.describe Lumberjack::LocalLogger do
         expect(logger.level).to eq(Logger::ERROR)
         :foobar
       end
+      expect(result).to eq(:foobar)
+    end
+
+    it "can override the log level only for the local logger" do
+      result = logger.with_local_level(Logger::WARN) do
+        expect(logger.level).to eq(Logger::WARN)
+        expect(parent_logger.level).to eq(Logger::INFO)
+        :foobar
+      end
+      expect(logger.level).to eq(Logger::DEBUG)
+      expect(parent_logger.level).to eq(Logger::INFO)
       expect(result).to eq(:foobar)
     end
 
@@ -135,7 +154,7 @@ RSpec.describe Lumberjack::LocalLogger do
   end
 
   describe "progname" do
-    it "can set a progname" do
+    it "can set a progname in the constructor" do
       logger = Lumberjack::LocalLogger.new(parent_logger, progname: "TestProgname")
       logger.info("Test message")
       expect(out.string).to include("TestProgname")
@@ -152,7 +171,7 @@ RSpec.describe Lumberjack::LocalLogger do
   end
 
   describe "tags" do
-    it "can set tags for the logger" do
+    it "can set tags for the logger in the constructor" do
       logger = Lumberjack::LocalLogger.new(parent_logger, tags: {user: "test_user"})
       expect(logger.local_tags).to eq({"user" => "test_user"})
 

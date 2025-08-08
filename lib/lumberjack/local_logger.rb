@@ -9,6 +9,8 @@ require "lumberjack"
 # their own loggers that can add metadata or change the logging level without having to
 # create entirely separate logger instances.
 class Lumberjack::LocalLogger
+  attr_reader :parent_logger
+
   # @param parent_logger [Lumberjack::Logger] The parent logger to proxy calls to.
   # @param level [nil, Symbol, String, Integer] Optional logging level for this logger. This will take precedence
   #   over the parent logger level.
@@ -58,6 +60,20 @@ class Lumberjack::LocalLogger
 
   # Rails compatibility.
   alias_method :log_at, :with_level
+
+  # Temporarily set the log level for the duration of the block, but only for this logger
+  # and not for the parent logger.
+  #
+  # @return [Object] The result of the block.
+  def with_local_level(temporary_level, &block)
+    save_level = Thread.current[:lumberjack_local_logger_level]
+    begin
+      Thread.current[:lumberjack_local_logger_level] = temporary_level
+      yield
+    ensure
+      Thread.current[:lumberjack_local_logger_level] = save_level
+    end
+  end
 
   # Silence logging temporarily. Only errors will be logged by default.
   #
