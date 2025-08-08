@@ -9,23 +9,43 @@ require "lumberjack"
 # their own loggers that can add metadata or change the logging level without having to
 # create entirely separate logger instances.
 class Lumberjack::LocalLogger
-  attr_reader :parent_logger
-
+  # @param parent_logger [Lumberjack::Logger] The parent logger to proxy calls to.
+  # @param level [nil, Symbol, String, Integer] Optional logging level for this logger. This will take precedence
+  #   over the parent logger level.
+  # @param progname [nil, String] Optional program name to use for log messages.
+  # @param tags [nil, Hash] Optional tags to associate with log messages. These will be merged with the parent logger's tags
+  #   for messages logged with this logger.
   def initialize(parent_logger, level: nil, progname: nil, tags: nil)
     @parent_logger = parent_logger
     @local_level = Lumberjack::Severity.coerce(level) unless level.nil?
-    @local_progname = progname
-    @local_tags = tags
+    self.progname = progname
+    @local_tags = Lumberjack::Utils.flatten_tags(tags).freeze unless tags.nil?
   end
 
+  # Get the current log level.
+  #
+  # @return [Integer]
   def level
     Thread.current[:lumberjack_local_logger_level] || @local_level || @parent_logger.level
   end
 
+  # Set the log level.
+  #
+  # @param severity [nil, Symbol, String, Integer] The new log level. Setting to nil will use the parent
+  #   loggers level.
+  # @return [void]
   def level=(severity)
-    @local_level = Lumberjack::Severity.coerce(severity)
+    @local_level = if severity.nil?
+      nil
+    else
+      Lumberjack::Severity.coerce(severity)
+    end
   end
 
+  # Temporarily set the log level for the duration of the block.
+  #
+  # @param temporary_level [Symbol, String, Integer] The temporary log level to use.
+  # @return [Object] The result of the block.
   def with_level(temporary_level, &block)
     save_level = Thread.current[:lumberjack_local_logger_level]
     begin
@@ -36,10 +56,82 @@ class Lumberjack::LocalLogger
     end
   end
 
+  # Rails compatibility.
   alias_method :log_at, :with_level
 
+  # Silence logging temporarily. Only errors will be logged by default.
+  #
+  # @param temporary_level [Symbol, String, Integer] The temporary log level to use. Defaults to Logger::ERROR.
+  # @return [Object] The result of the block.
   def silence(temporary_level = Logger::ERROR, &block)
     with_level(temporary_level, &block)
+  end
+
+  # Set the program name for the local logger.
+  #
+  # @param value [String] The program name to set.
+  # @return [void]
+  def progname=(value)
+    @local_progname = value&.dup&.freeze
+  end
+
+  # Get the program name for the logger.
+  #
+  # @return [String]
+  def progname
+    @local_progname || @parent_logger.progname
+  end
+
+  # Add local tags to all messages in a block. These tags will only apply to the messages logged
+  # by this logger and will not propagate to the parent logger.
+  #
+  # @param tags [Hash] The tags to add.
+  # @return [Object] The result of the block.
+  def tag_local(tags = {}, &block)
+    save_tags = Thread.current[:lumberjack_local_logger_tags]
+    begin
+      Thread.current[:lumberjack_local_logger_tags] = Lumberjack::Utils.flatten_tags(tags)
+      yield
+    ensure
+      Thread.current[:lumberjack_local_logger_tags] = save_tags
+    end
+  end
+
+  # Add local tags to all messages logged by this logger.
+  #
+  # @param tags [Hash] The tags to add.
+  # @return [void]
+  def add_local_tags(tags)
+    tag_context = Lumberjack::TagContext.new(@local_tags&.dup || {})
+    tag_context.tag(tags)
+    @local_tags = tag_context.to_h.freeze
+  end
+
+  # Remove local tags from all messages logged by this logger.
+  #
+  # @param names [Array<String>, Array<Symbol>] The names of the tags to remove.
+  # @return [void]
+  def remove_local_tags(*names)
+    return if @local_tags.nil?
+
+    tag_context = Lumberjack::TagContext.new(@local_tags&.dup || {})
+    tag_context.delete(*names)
+    @local_tags = tag_context.to_h.freeze
+  end
+
+  # Get the local tags for the logger.
+  #
+  # @return [Hash<String, Object] The local tags for the logger.
+  def local_tags
+    tags = Thread.current[:lumberjack_local_logger_tags] || @local_tags || {}
+    Lumberjack::TagContext.new(tags).to_h.freeze
+  end
+
+  # Get the tags for the logger including tags inherited from the parent logger.
+  #
+  # @return [Hash<String, Object>] The tags for the logger.
+  def tags
+    @parent_logger.tag(@local_tags) { @parent_logger.tags }
   end
 
   # Log a +FATAL+ message. The message can be passed in either the +message+ argument or in a block.

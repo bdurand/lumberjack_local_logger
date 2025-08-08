@@ -11,35 +11,41 @@ RSpec.describe Lumberjack::LocalLogger do
 
     it "can override the parent logger's level" do
       expect(logger.level).to eq(Logger::DEBUG)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
     end
 
     it "can change the level" do
       logger.level = Logger::ERROR
       expect(logger.level).to eq(Logger::ERROR)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
     end
 
     it "can change the level in a block" do
-      logger.with_level(Logger::WARN) do
+      result = logger.with_level(Logger::WARN) do
         expect(logger.level).to eq(Logger::WARN)
-        expect(logger.parent_logger.level).to eq(Logger::WARN)
+        expect(parent_logger.level).to eq(Logger::WARN)
+        :foobar
       end
       expect(logger.level).to eq(Logger::DEBUG)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
+      expect(result).to eq(:foobar)
     end
 
     it "can silence the logger" do
-      logger.silence do
+      result = logger.silence do
         expect(logger.level).to eq(Logger::ERROR)
+        :foobar
       end
       expect(logger.level).to eq(Logger::DEBUG)
+      expect(result).to eq(:foobar)
     end
 
     it "can silence the logger with log_at" do
-      logger.log_at(Logger::ERROR) do
+      result = logger.log_at(Logger::ERROR) do
         expect(logger.level).to eq(Logger::ERROR)
+        :foobar
       end
+      expect(result).to eq(:foobar)
     end
 
     it "can determine if the log level is fatal" do
@@ -75,31 +81,56 @@ RSpec.describe Lumberjack::LocalLogger do
     it "can set the log level to fatal" do
       logger.fatal!
       expect(logger.level).to eq(Logger::FATAL)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
     end
 
     it "can set the log level to error" do
       logger.error!
       expect(logger.level).to eq(Logger::ERROR)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
     end
 
     it "can set the log level to warn" do
       logger.warn!
       expect(logger.level).to eq(Logger::WARN)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
     end
 
     it "can set the log level to info" do
       logger.info!
       expect(logger.level).to eq(Logger::INFO)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
     end
 
     it "can set the log level to debug" do
       logger.debug!
       expect(logger.level).to eq(Logger::DEBUG)
-      expect(logger.parent_logger.level).to eq(Logger::INFO)
+      expect(parent_logger.level).to eq(Logger::INFO)
+    end
+
+    it "can be silenced" do
+      logger.silence do
+        expect(logger.info?).to be(false)
+        expect(parent_logger.info?).to be(false)
+      end
+    end
+
+    it "can override the log level with with_level" do
+      logger.with_level(Logger::WARN) do
+        expect(logger.level).to eq(Logger::WARN)
+        expect(parent_logger.level).to eq(Logger::WARN)
+      end
+      expect(logger.level).to eq(Logger::DEBUG)
+      expect(parent_logger.level).to eq(Logger::INFO)
+    end
+
+    it "can override the log level with log_at" do
+      logger.log_at(Logger::WARN) do
+        expect(logger.level).to eq(Logger::WARN)
+        expect(parent_logger.level).to eq(Logger::WARN)
+      end
+      expect(logger.level).to eq(Logger::DEBUG)
+      expect(parent_logger.level).to eq(Logger::INFO)
     end
   end
 
@@ -109,13 +140,69 @@ RSpec.describe Lumberjack::LocalLogger do
       logger.info("Test message")
       expect(out.string).to include("TestProgname")
     end
+
+    it "can get and set the progname" do
+      parent_logger.progname = "MyApp"
+      logger = Lumberjack::LocalLogger.new(parent_logger)
+      expect(logger.progname).to eq("MyApp")
+      logger.progname = "NewProgname"
+      expect(logger.progname).to eq("NewProgname")
+      expect(parent_logger.progname).to eq("MyApp")
+    end
   end
 
   describe "tags" do
     it "can set tags for the logger" do
       logger = Lumberjack::LocalLogger.new(parent_logger, tags: {user: "test_user"})
+      expect(logger.local_tags).to eq({"user" => "test_user"})
+
       logger.info("Test message with tags")
       expect(out.string).to include("test_user")
+
+      out.truncate(0)
+      out.rewind
+      parent_logger.info("Parent message without tags")
+      expect(out.string).to_not include("test_user")
+    end
+
+    it "can add local tags" do
+      logger = Lumberjack::LocalLogger.new(parent_logger)
+      expect(logger.local_tags).to eq({})
+
+      logger.add_local_tags(user: "test_user")
+      expect(logger.local_tags).to eq({"user" => "test_user"})
+
+      logger.add_local_tags(role: "admin")
+      expect(logger.local_tags).to eq({"user" => "test_user", "role" => "admin"})
+
+      logger.info("Test message with tags")
+      expect(out.string).to include("test_user")
+    end
+
+    it "can add local tags in a block" do
+      logger = Lumberjack::LocalLogger.new(parent_logger)
+      result = logger.tag_local(user: "test_user") do
+        expect(logger.local_tags).to eq({"user" => "test_user"})
+        expect(parent_logger.tags).to eq({})
+        :foobar
+      end
+
+      expect(result).to eq(:foobar)
+    end
+
+    it "merges local tags with parent tags" do
+      logger = Lumberjack::LocalLogger.new(parent_logger)
+      expect(logger.tags).to eq({})
+
+      logger.add_local_tags(user: "test_user")
+      expect(logger.tags).to eq({"user" => "test_user"})
+
+      parent_logger.tag_globally(pid: 123)
+      expect(logger.tags).to eq({"pid" => 123, "user" => "test_user"})
+
+      logger.remove_local_tags(:user) do
+        expect(logger.local_tags).to eq({"pid" => 123})
+      end
     end
   end
 
