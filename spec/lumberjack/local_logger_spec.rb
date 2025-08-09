@@ -67,6 +67,15 @@ RSpec.describe Lumberjack::LocalLogger do
       expect(result).to eq(:foobar)
     end
 
+    it "clears the local level if set to nil" do
+      logger.with_local_level(Logger::WARN) do
+        expect(logger.level).to eq(Logger::WARN)
+        logger.with_local_level(nil) do
+          expect(logger.level).to eq(Logger::DEBUG)
+        end
+      end
+    end
+
     it "can determine if the log level is fatal" do
       expect(logger.fatal?).to be(true)
       logger.level = :unknown
@@ -156,8 +165,8 @@ RSpec.describe Lumberjack::LocalLogger do
   describe "progname" do
     it "can set a progname in the constructor" do
       logger = Lumberjack::LocalLogger.new(parent_logger, progname: "TestProgname")
-      logger.info("Test message")
-      expect(out.string).to include("TestProgname")
+      logs = capture_logger(logger) { logger.info("Test message") }
+      expect(logs).to include_log_entry(message: "Test message", progname: "TestProgname")
     end
 
     it "can get and set the progname" do
@@ -175,13 +184,11 @@ RSpec.describe Lumberjack::LocalLogger do
       logger = Lumberjack::LocalLogger.new(parent_logger, tags: {user: "test_user"})
       expect(logger.local_tags).to eq({"user" => "test_user"})
 
-      logger.info("Test message with tags")
-      expect(out.string).to include("test_user")
+      logs = capture_logger(logger) { logger.info("Test message with tags") }
+      expect(logs).to include_log_entry(message: "Test message with tags", tags: {"user" => "test_user"})
 
-      out.truncate(0)
-      out.rewind
-      parent_logger.info("Parent message without tags")
-      expect(out.string).to_not include("test_user")
+      logs = capture_logger(parent_logger) { parent_logger.info("Parent message without tags") }
+      expect(logs).to_not include_log_entry(tags: {"user" => "test_user"})
     end
 
     it "can add local tags" do
@@ -194,19 +201,67 @@ RSpec.describe Lumberjack::LocalLogger do
       logger.add_local_tags(role: "admin")
       expect(logger.local_tags).to eq({"user" => "test_user", "role" => "admin"})
 
-      logger.info("Test message with tags")
-      expect(out.string).to include("test_user")
+      logs = capture_logger(logger) { logger.info("Test message with tags") }
+      expect(logs).to include_log_entry(message: "Test message with tags", tags: {"user" => "test_user", "role" => "admin"})
     end
 
-    it "can add local tags in a block" do
-      logger = Lumberjack::LocalLogger.new(parent_logger)
-      result = logger.tag_local(user: "test_user") do
-        expect(logger.local_tags).to eq({"user" => "test_user"})
-        expect(parent_logger.tags).to eq({})
-        :foobar
+    describe "#tag_local" do
+      it "can add local tags in a block" do
+        logger = Lumberjack::LocalLogger.new(parent_logger)
+        result = logger.tag_local(user: "test_user") do
+          expect(logger.local_tags).to eq({"user" => "test_user"})
+          expect(logger.tags).to eq({"user" => "test_user"})
+          expect(parent_logger.tags).to eq({})
+          :foobar
+        end
+        expect(logger.local_tags).to eq({})
+        expect(logger.tags).to eq({})
+        expect(result).to eq(:foobar)
       end
 
-      expect(result).to eq(:foobar)
+      it "merges local tags" do
+        logger = Lumberjack::LocalLogger.new(parent_logger, tags: {fip: "fap"})
+        parent_logger.tag(bip: "bap") do
+          logger.tag_local(wip: "wap") do
+            logger.tag_local(biz: "buz")
+            logger.tag_local(zip: "zap") do
+              logger.tag_local(foo: "bar")
+              expect(logger.local_tags).to eq({"fip" => "fap", "wip" => "wap", "zip" => "zap", "foo" => "bar", "biz" => "buz"})
+              expect(logger.tags).to eq({"bip" => "bap", "fip" => "fap", "wip" => "wap", "zip" => "zap", "foo" => "bar", "biz" => "buz"})
+            end
+            expect(logger.local_tags).to eq({"fip" => "fap", "wip" => "wap", "biz" => "buz"})
+            expect(logger.tags).to eq({"bip" => "bap", "fip" => "fap", "wip" => "wap", "biz" => "buz"})
+          end
+        end
+        expect(logger.local_tags).to eq({"fip" => "fap"})
+        expect(logger.tags).to eq({"fip" => "fap"})
+      end
+
+      it "does nothing if not in a tag_local block" do
+        logger = Lumberjack::LocalLogger.new(parent_logger)
+        logger.tag_local(user: "test_user")
+        expect(logger.local_tags).to eq({})
+      end
+
+      it "adds local tags to the nearest tag_local block" do
+        logger = Lumberjack::LocalLogger.new(parent_logger)
+        logger.tag_local(user: "test_user") do
+          logger.tag_local(role: "admin") do
+            expect(logger.local_tags).to eq({"user" => "test_user", "role" => "admin"})
+            expect(logger.tags).to eq({"user" => "test_user", "role" => "admin"})
+          end
+          expect(logger.local_tags).to eq({"user" => "test_user"})
+        end
+        expect(logger.local_tags).to eq({})
+      end
+
+      it "includes local block tags in log entries" do
+        logger = Lumberjack::LocalLogger.new(parent_logger, tags: {user: "test_user"})
+        logger.tag_local(role: "admin") do
+          logs = capture_logger(logger) { logger.info("Test message with tags") }
+          expect(logs).to include_log_entry(message: "Test message with tags", tags: {"user" => "test_user", "role" => "admin"})
+        end
+      end
     end
 
     it "merges local tags with parent tags" do
@@ -230,29 +285,26 @@ RSpec.describe Lumberjack::LocalLogger do
 
     describe "#fatal" do
       it "can log fatal messages" do
-        logger.fatal("msg")
-        expect(out.string).to include("FATAL")
-        expect(out.string).to include("msg")
+        logs = capture_logger(logger) { logger.fatal("msg") }
+        expect(logs).to include_log_entry(level: :fatal, message: "msg")
       end
 
-      it "does not log fatal messages when the level is higher" do
+      it "does not log error messages when the level is higher" do
         logger.level = :unknown
-        logger.fatal("msg")
+        logger.error("msg")
         expect(out.string).to be_empty
       end
 
       it "can log fatal messages with a block" do
-        logger.fatal { "msg from block" }
-        expect(out.string).to include("FATAL")
-        expect(out.string).to include("msg from block")
+        logs = capture_logger(logger) { logger.fatal { "msg from block" } }
+        expect(logs).to include_log_entry(level: :fatal, message: "msg from block")
       end
     end
 
     describe "#error" do
       it "can log error messages" do
-        logger.error("msg")
-        expect(out.string).to include("ERROR")
-        expect(out.string).to include("msg")
+        logs = capture_logger(logger) { logger.error("msg") }
+        expect(logs).to include_log_entry(level: :error, message: "msg")
       end
 
       it "does not log error messages when the level is higher" do
@@ -262,17 +314,15 @@ RSpec.describe Lumberjack::LocalLogger do
       end
 
       it "can log error messages with a block" do
-        logger.error { "msg from block" }
-        expect(out.string).to include("ERROR")
-        expect(out.string).to include("msg from block")
+        logs = capture_logger(logger) { logger.error { "msg from block" } }
+        expect(logs).to include_log_entry(level: :error, message: "msg from block")
       end
     end
 
     describe "#warn" do
       it "can log warn messages" do
-        logger.warn("msg")
-        expect(out.string).to include("WARN")
-        expect(out.string).to include("msg")
+        logs = capture_logger(logger) { logger.warn("msg") }
+        expect(logs).to include_log_entry(level: :warn, message: "msg")
       end
 
       it "does not log warn messages when the level is higher" do
@@ -282,17 +332,15 @@ RSpec.describe Lumberjack::LocalLogger do
       end
 
       it "can log warn messages with a block" do
-        logger.warn { "msg from block" }
-        expect(out.string).to include("WARN")
-        expect(out.string).to include("msg from block")
+        logs = capture_logger(logger) { logger.warn { "msg from block" } }
+        expect(logs).to include_log_entry(level: :warn, message: "msg from block")
       end
     end
 
     describe "#info" do
       it "can log info messages" do
-        logger.info("msg")
-        expect(out.string).to include("INFO")
-        expect(out.string).to include("msg")
+        logs = capture_logger(logger) { logger.info("msg") }
+        expect(logs).to include_log_entry(level: :info, message: "msg")
       end
 
       it "does not log info messages when the level is higher" do
@@ -302,17 +350,15 @@ RSpec.describe Lumberjack::LocalLogger do
       end
 
       it "can log info messages with a block" do
-        logger.info { "msg from block" }
-        expect(out.string).to include("INFO")
-        expect(out.string).to include("msg from block")
+        logs = capture_logger(logger) { logger.info { "msg from block" } }
+        expect(logs).to include_log_entry(level: :info, message: "msg from block")
       end
     end
 
     describe "#debug" do
       it "can log debug messages" do
-        logger.debug("msg")
-        expect(out.string).to include("DEBUG")
-        expect(out.string).to include("msg")
+        logs = capture_logger(logger) { logger.debug("msg") }
+        expect(logs).to include_log_entry(level: :debug, message: "msg")
       end
 
       it "does not log debug messages when the level is higher" do
@@ -322,38 +368,34 @@ RSpec.describe Lumberjack::LocalLogger do
       end
 
       it "can log debug messages with a block" do
-        logger.debug { "msg from block" }
-        expect(out.string).to include("DEBUG")
-        expect(out.string).to include("msg from block")
+        logs = capture_logger(logger) { logger.debug { "msg from block" } }
+        expect(logs).to include_log_entry(level: :debug, message: "msg from block")
       end
     end
 
     describe "#unknown" do
       it "can log unknown messages" do
-        logger.unknown("msg")
-        expect(out.string).to include("UNKNOWN")
-        expect(out.string).to include("msg")
+        logs = capture_logger(logger) { logger.unknown("msg") }
+        expect(logs).to include_log_entry(level: :unknown, message: "msg")
       end
 
       it "can log unknown messages with a block" do
-        logger.unknown { "msg from block" }
-        expect(out.string).to include("UNKNOWN")
-        expect(out.string).to include("msg from block")
+        logs = capture_logger(logger) { logger.unknown { "msg from block" } }
+        expect(logs).to include_log_entry(level: :unknown, message: "msg from block")
       end
     end
 
     describe "#add" do
       it "can add a new log message" do
-        logger.add(Logger::INFO, "New log message")
-        expect(out.string).to include("INFO")
-        expect(out.string).to include("New log message")
+        logs = capture_logger(logger) { logger.add(Logger::INFO, "New log message") }
+        expect(logs).to include_log_entry(level: :info, message: "New log message")
       end
     end
 
     describe "#<<" do
       it "can log messages using the shovel operator" do
-        logger << "msg"
-        expect(out.string).to include("msg")
+        logs = capture_logger(logger) { logger << "msg" }
+        expect(logs).to include_log_entry(level: :UNKNOWN, message: "msg")
       end
     end
   end

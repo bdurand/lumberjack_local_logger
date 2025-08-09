@@ -101,15 +101,27 @@ class Lumberjack::LocalLogger
   # Add local tags to all messages in a block. These tags will only apply to the messages logged
   # by this logger and will not propagate to the parent logger.
   #
+  # If a block is not given, then the tags will be added to the most recent `tag_local`
+  # block in the call stack. If there is no such block, then no tags will be added.
+  #
   # @param tags [Hash] The tags to add.
   # @return [Object] The result of the block.
   def tag_local(tags = {}, &block)
     save_tags = Thread.current[:lumberjack_local_logger_tags]
-    begin
-      Thread.current[:lumberjack_local_logger_tags] = Lumberjack::Utils.flatten_tags(tags)
-      yield
-    ensure
+    tags = Lumberjack::Utils.flatten_tags(tags)
+
+    if block
+      merged_tags = local_tags.merge(tags)
+      begin
+        Thread.current[:lumberjack_local_logger_tags] = merged_tags
+        yield
+      ensure
+        Thread.current[:lumberjack_local_logger_tags] = save_tags
+      end
+    elsif save_tags
+      save_tags.merge!(tags)
       Thread.current[:lumberjack_local_logger_tags] = save_tags
+      nil
     end
   end
 
@@ -147,7 +159,7 @@ class Lumberjack::LocalLogger
   #
   # @return [Hash<String, Object>] The tags for the logger.
   def tags
-    @parent_logger.tag(@local_tags) { @parent_logger.tags }
+    @parent_logger.tag(local_tags) { @parent_logger.tags }
   end
 
   # Log a +FATAL+ message. The message can be passed in either the +message+ argument or in a block.
@@ -360,10 +372,12 @@ class Lumberjack::LocalLogger
   def call_with_local_overrides
     @parent_logger.with_level(level) do
       @parent_logger.set_progname(@local_progname) do
-        @parent_logger.tag(@local_tags) do
+        @parent_logger.tag(local_tags) do
           yield
         end
       end
     end
   end
 end
+
+require_relative "local_logger/helper"
