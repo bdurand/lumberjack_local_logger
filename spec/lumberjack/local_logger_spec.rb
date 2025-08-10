@@ -137,28 +137,34 @@ RSpec.describe Lumberjack::LocalLogger do
     end
 
     it "can be silenced" do
-      logger.silence do
+      result = logger.silence do
         expect(logger.info?).to be(false)
         expect(parent_logger.info?).to be(false)
+        :foobar
       end
+      expect(result).to eq(:foobar)
     end
 
     it "can override the log level with with_level" do
-      logger.with_level(Logger::WARN) do
+      result = logger.with_level(:warn) do
         expect(logger.level).to eq(Logger::WARN)
         expect(parent_logger.level).to eq(Logger::WARN)
+        :foobar
       end
       expect(logger.level).to eq(Logger::DEBUG)
       expect(parent_logger.level).to eq(Logger::INFO)
+      expect(result).to eq(:foobar)
     end
 
     it "can override the log level with log_at" do
-      logger.log_at(Logger::WARN) do
+      result = logger.log_at(Logger::WARN) do
         expect(logger.level).to eq(Logger::WARN)
         expect(parent_logger.level).to eq(Logger::WARN)
+        :foobar
       end
       expect(logger.level).to eq(Logger::DEBUG)
       expect(parent_logger.level).to eq(Logger::INFO)
+      expect(result).to eq(:foobar)
     end
   end
 

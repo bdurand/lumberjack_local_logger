@@ -51,7 +51,7 @@ class Lumberjack::LocalLogger
   def with_level(temporary_level, &block)
     save_level = Thread.current[:lumberjack_local_logger_level]
     begin
-      Thread.current[:lumberjack_local_logger_level] = temporary_level
+      Thread.current[:lumberjack_local_logger_level] = Lumberjack::Severity.coerce(temporary_level)
       @parent_logger.with_level(temporary_level, &block)
     ensure
       Thread.current[:lumberjack_local_logger_level] = save_level
