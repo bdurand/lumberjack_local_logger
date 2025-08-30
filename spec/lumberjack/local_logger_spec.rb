@@ -1,408 +1,234 @@
 # frozen_string_literal: true
 
-require_relative "../spec_helper"
+require "spec_helper"
 
-RSpec.describe Lumberjack::LocalLogger do
-  let(:out) { StringIO.new }
-  let(:parent_logger) { Lumberjack::Logger.new(out, level: :info) }
+class MyClass
+  include Lumberjack::LocalLogger
 
-  describe "#parent_logger" do
-    let(:logger) { Lumberjack::LocalLogger.new(parent_logger) }
+  setup_logger do |logger|
+    logger.tag!(component: -> { name })
+    logger.level = :info
+    logger.progname = "my_class"
+  end
 
+  attr_reader :action
+
+  def initialize(action)
+    @action = action
+  end
+
+  def perform(value, option: nil)
+    logger.info("Performing action")
+    UpCaser.new(value).call
+  end
+
+  add_log_attributes(:perform, method: "perform") do |value, option:|
+    logger.tag(value: value, option: option, action: action)
+  end
+
+  def debug_perform(value, option: nil)
+    logger.debug("Performing debug action with #{value.inspect}")
+    result = perform(value, option: option)
+    logger.debug("Debug action completed with result: #{result.inspect}")
+  end
+
+  add_log_attributes(:debug_perform, debugging: "local") do
+    logger.level = :debug
+  end
+
+  def execute(value)
+    logger.info("Calling execute")
+    UpCaser.new(value).call
+  end
+
+  add_log_attributes(:execute) do
+    logger.tag(execute: action, big_action: @action.to_s.upcase)
+  end
+
+  def shadow_perform(value, option: nil)
+    UpCaser.new(value).call
+  end
+end
+
+class MySubclass < MyClass
+  setup_logger do |logger|
+    logger.tag!(subcomponent: "MySubclass")
+    logger.level = :debug
+    logger.progname = "MySubclassProgram"
+  end
+end
+
+class InheritingSubclass < MyClass
+end
+
+class UpCaser
+  def initialize(value)
+    @value = value
+  end
+
+  def call
+    MyClass.logger.parent_logger.info("Calling upcase")
+    @value.to_s.upcase
+  end
+end
+
+describe Lumberjack::LocalLogger do
+  let(:parent_logger) { Lumberjack::Logger.new(:test, level: :warn) }
+  let(:last_entry) { parent_logger.device.entries.last }
+
+  around do |example|
+    MyClass.parent_logger = parent_logger
+    example.run
+  ensure
+    Lumberjack::LocalLogger.default_logger = nil
+    MyClass.parent_logger = nil
+    MySubclass.parent_logger = nil
+    InheritingSubclass.parent_logger = nil
+  end
+
+  describe ".parent_logger" do
     it "returns the parent logger" do
-      expect(logger.parent_logger).to eq(parent_logger)
+      expect(MyClass.parent_logger).to equal(parent_logger)
+    end
+
+    it "inherits the superclass parent logger" do
+      expect(InheritingSubclass.parent_logger).to equal(parent_logger)
+    end
+
+    it "can set a different parent logger per subclass" do
+      other_logger = Lumberjack::Logger.new(:test, level: :error)
+      MySubclass.parent_logger = other_logger
+      expect(MySubclass.parent_logger).to equal(other_logger)
+      expect(MyClass.parent_logger).to equal(parent_logger)
+    end
+
+    it "uses the default logger if no parent logger is set" do
+      MyClass.parent_logger = nil
+      expect(MyClass.parent_logger).to be_nil
+
+      Lumberjack::LocalLogger.default_logger = parent_logger
+      expect(MyClass.parent_logger).to equal(parent_logger)
     end
   end
 
-  describe "#level" do
-    let(:logger) { Lumberjack::LocalLogger.new(parent_logger, level: :debug) }
-
-    it "can override the parent logger's level with the constructor value" do
-      expect(logger.level).to eq(Logger::DEBUG)
-      expect(parent_logger.level).to eq(Logger::INFO)
-    end
-
-    it "can change the level" do
-      logger.level = Logger::ERROR
-      expect(logger.level).to eq(Logger::ERROR)
-      expect(parent_logger.level).to eq(Logger::INFO)
-    end
-
-    it "can change the level in a block" do
-      result = logger.with_level(Logger::WARN) do
-        expect(logger.level).to eq(Logger::WARN)
-        expect(parent_logger.level).to eq(Logger::WARN)
-        :foobar
-      end
-      expect(logger.level).to eq(Logger::DEBUG)
-      expect(parent_logger.level).to eq(Logger::INFO)
-      expect(result).to eq(:foobar)
-    end
-
-    it "can silence the logger" do
-      result = logger.silence do
-        expect(logger.level).to eq(Logger::ERROR)
-        :foobar
-      end
-      expect(logger.level).to eq(Logger::DEBUG)
-      expect(result).to eq(:foobar)
-    end
-
-    it "can silence the logger with log_at" do
-      result = logger.log_at(Logger::ERROR) do
-        expect(logger.level).to eq(Logger::ERROR)
-        :foobar
-      end
-      expect(result).to eq(:foobar)
-    end
-
-    it "can override the log level only for the local logger" do
-      result = logger.with_local_level(Logger::WARN) do
-        expect(logger.level).to eq(Logger::WARN)
-        expect(parent_logger.level).to eq(Logger::INFO)
-        :foobar
-      end
-      expect(logger.level).to eq(Logger::DEBUG)
-      expect(parent_logger.level).to eq(Logger::INFO)
-      expect(result).to eq(:foobar)
-    end
-
-    it "clears the local level if set to nil" do
-      logger.with_local_level(Logger::WARN) do
-        expect(logger.level).to eq(Logger::WARN)
-        logger.with_local_level(nil) do
-          expect(logger.level).to eq(Logger::DEBUG)
-        end
-      end
-    end
-
-    it "can determine if the log level is fatal" do
-      expect(logger.fatal?).to be(true)
-      logger.level = :unknown
-      expect(logger.fatal?).to be(false)
-    end
-
-    it "can determine if the log level is error" do
-      expect(logger.error?).to be(true)
-      logger.level = :fatal
-      expect(logger.error?).to be(false)
-    end
-
-    it "can determine if the log level is warn" do
-      expect(logger.warn?).to be(true)
-      logger.level = :error
-      expect(logger.warn?).to be(false)
-    end
-
-    it "can determine if the log level is info" do
-      expect(logger.info?).to be(true)
-      logger.level = :warn
-      expect(logger.info?).to be(false)
-    end
-
-    it "can determine if the log level is debug" do
-      expect(logger.debug?).to be(true)
-      logger.level = :info
-      expect(logger.debug?).to be(false)
-    end
-
-    it "can set the log level to fatal" do
-      logger.fatal!
-      expect(logger.level).to eq(Logger::FATAL)
-      expect(parent_logger.level).to eq(Logger::INFO)
-    end
-
-    it "can set the log level to error" do
-      logger.error!
-      expect(logger.level).to eq(Logger::ERROR)
-      expect(parent_logger.level).to eq(Logger::INFO)
-    end
-
-    it "can set the log level to warn" do
-      logger.warn!
-      expect(logger.level).to eq(Logger::WARN)
-      expect(parent_logger.level).to eq(Logger::INFO)
-    end
-
-    it "can set the log level to info" do
-      logger.info!
+  describe ".logger" do
+    it "returns a local logger with meta data set up" do
+      logger = MyClass.logger
+      expect(logger).to be_a(Lumberjack::ContextLogger)
+      expect(logger.progname).to eq("my_class")
       expect(logger.level).to eq(Logger::INFO)
-      expect(parent_logger.level).to eq(Logger::INFO)
+      expect(logger.attributes["component"]).to be_a(Proc)
     end
 
-    it "can set the log level to debug" do
-      logger.debug!
-      expect(logger.level).to eq(Logger::DEBUG)
-      expect(parent_logger.level).to eq(Logger::INFO)
+    it "returns a different logger instance for each class" do
+      expect(InheritingSubclass.logger).to be_a(Lumberjack::ContextLogger)
+      expect(MyClass.logger).not_to equal(InheritingSubclass.logger)
     end
 
-    it "can be silenced" do
-      result = logger.silence do
-        expect(logger.info?).to be(false)
-        expect(parent_logger.info?).to be(false)
-        :foobar
-      end
-      expect(result).to eq(:foobar)
-    end
-
-    it "can override the log level with with_level" do
-      result = logger.with_level(:warn) do
-        expect(logger.level).to eq(Logger::WARN)
-        expect(parent_logger.level).to eq(Logger::WARN)
-        :foobar
-      end
-      expect(logger.level).to eq(Logger::DEBUG)
-      expect(parent_logger.level).to eq(Logger::INFO)
-      expect(result).to eq(:foobar)
-    end
-
-    it "can override the log level with log_at" do
-      result = logger.log_at(Logger::WARN) do
-        expect(logger.level).to eq(Logger::WARN)
-        expect(parent_logger.level).to eq(Logger::WARN)
-        :foobar
-      end
-      expect(logger.level).to eq(Logger::DEBUG)
-      expect(parent_logger.level).to eq(Logger::INFO)
-      expect(result).to eq(:foobar)
+    it "returns nil if no parent logger is set" do
+      MyClass.parent_logger = nil
+      expect(MyClass.logger).to be_nil
     end
   end
 
-  describe "progname" do
-    it "can set a progname in the constructor" do
-      logger = Lumberjack::LocalLogger.new(parent_logger, progname: "TestProgname")
-      logs = capture_logger(logger) { logger.info("Test message") }
-      expect(logs).to include_log_entry(message: "Test message", progname: "TestProgname")
-    end
-
-    it "can get and set the progname" do
-      parent_logger.progname = "MyApp"
-      logger = Lumberjack::LocalLogger.new(parent_logger)
-      expect(logger.progname).to eq("MyApp")
-      logger.progname = "NewProgname"
-      expect(logger.progname).to eq("NewProgname")
-      expect(parent_logger.progname).to eq("MyApp")
+  describe "#logger" do
+    it "returns the class logger" do
+      expect(MyClass.new("foobar").logger).to equal(MyClass.logger)
     end
   end
 
-  describe "tags" do
-    it "can set tags for the logger in the constructor" do
-      logger = Lumberjack::LocalLogger.new(parent_logger, tags: {user: "test_user"})
-      expect(logger.local_tags).to eq({"user" => "test_user"})
-
-      logs = capture_logger(logger) { logger.info("Test message with tags") }
-      expect(logs).to include_log_entry(message: "Test message with tags", tags: {"user" => "test_user"})
-
-      logs = capture_logger(parent_logger) { parent_logger.info("Parent message without tags") }
-      expect(logs).to_not include_log_entry(tags: {"user" => "test_user"})
+  describe ".setup_logger" do
+    it "sets up the local logger with the block" do
+      expect(MyClass.logger.progname).to eq("my_class")
+      expect(MyClass.logger.parent_logger.progname).to be_nil
     end
 
-    it "can add local tags" do
-      logger = Lumberjack::LocalLogger.new(parent_logger)
-      expect(logger.local_tags).to eq({})
-
-      logger.add_local_tags(user: "test_user")
-      expect(logger.local_tags).to eq({"user" => "test_user"})
-
-      logger.add_local_tags(role: "admin")
-      expect(logger.local_tags).to eq({"user" => "test_user", "role" => "admin"})
-
-      logs = capture_logger(logger) { logger.info("Test message with tags") }
-      expect(logs).to include_log_entry(message: "Test message with tags", tags: {"user" => "test_user", "role" => "admin"})
+    it "inherits the superclass logger attributes" do
+      InheritingSubclass.logger.info("test")
+      expect(last_entry.attributes).to eq({"component" => "MyClass"})
     end
 
-    describe "#tag_local" do
-      it "can add local tags in a block" do
-        logger = Lumberjack::LocalLogger.new(parent_logger)
-        result = logger.tag_local(user: "test_user") do
-          expect(logger.local_tags).to eq({"user" => "test_user"})
-          expect(logger.tags).to eq({"user" => "test_user"})
-          expect(parent_logger.tags).to eq({})
-          :foobar
-        end
-        expect(logger.local_tags).to eq({})
-        expect(logger.tags).to eq({})
-        expect(result).to eq(:foobar)
-      end
-
-      it "merges local tags" do
-        logger = Lumberjack::LocalLogger.new(parent_logger, tags: {fip: "fap"})
-        parent_logger.tag(bip: "bap") do
-          logger.tag_local(wip: "wap") do
-            logger.tag_local(biz: "buz")
-            logger.tag_local(zip: "zap") do
-              logger.tag_local(foo: "bar")
-              expect(logger.local_tags).to eq({"fip" => "fap", "wip" => "wap", "zip" => "zap", "foo" => "bar", "biz" => "buz"})
-              expect(logger.tags).to eq({"bip" => "bap", "fip" => "fap", "wip" => "wap", "zip" => "zap", "foo" => "bar", "biz" => "buz"})
-            end
-            expect(logger.local_tags).to eq({"fip" => "fap", "wip" => "wap", "biz" => "buz"})
-            expect(logger.tags).to eq({"bip" => "bap", "fip" => "fap", "wip" => "wap", "biz" => "buz"})
-          end
-        end
-        expect(logger.local_tags).to eq({"fip" => "fap"})
-        expect(logger.tags).to eq({"fip" => "fap"})
-      end
-
-      it "does nothing if not in a tag_local block" do
-        logger = Lumberjack::LocalLogger.new(parent_logger)
-        logger.tag_local(user: "test_user")
-        expect(logger.local_tags).to eq({})
-      end
-
-      it "adds local tags to the nearest tag_local block" do
-        logger = Lumberjack::LocalLogger.new(parent_logger)
-        logger.tag_local(user: "test_user") do
-          logger.tag_local(role: "admin") do
-            expect(logger.local_tags).to eq({"user" => "test_user", "role" => "admin"})
-            expect(logger.tags).to eq({"user" => "test_user", "role" => "admin"})
-          end
-          expect(logger.local_tags).to eq({"user" => "test_user"})
-        end
-        expect(logger.local_tags).to eq({})
-      end
-
-      it "includes local block tags in log entries" do
-        logger = Lumberjack::LocalLogger.new(parent_logger, tags: {user: "test_user"})
-        logger.tag_local(role: "admin") do
-          logs = capture_logger(logger) { logger.info("Test message with tags") }
-          expect(logs).to include_log_entry(message: "Test message with tags", tags: {"user" => "test_user", "role" => "admin"})
-        end
-      end
+    it "can merges the superclass logger attributes" do
+      MySubclass.logger.info("test")
+      expect(last_entry.attributes).to eq({"component" => "MyClass", "subcomponent" => "MySubclass"})
+      expect(MySubclass.logger.level).to eq(Logger::DEBUG)
+      expect(MySubclass.logger.progname).to eq("MySubclassProgram")
     end
 
-    it "merges local tags with parent tags" do
-      logger = Lumberjack::LocalLogger.new(parent_logger)
-      expect(logger.tags).to eq({})
-
-      logger.add_local_tags(user: "test_user")
-      expect(logger.tags).to eq({"user" => "test_user"})
-
-      parent_logger.tag_globally(pid: 123)
-      expect(logger.tags).to eq({"pid" => 123, "user" => "test_user"})
-
-      logger.remove_local_tags(:user) do
-        expect(logger.local_tags).to eq({"pid" => 123})
-      end
+    it "calls procs for dynamic attributes at runtime from the class binding" do
+      logger = MySubclass.logger
+      logger.info("test")
+      expect(last_entry.attributes).to eq({"component" => "MyClass", "subcomponent" => "MySubclass"})
     end
   end
 
-  describe "logging methods" do
-    let(:logger) { Lumberjack::LocalLogger.new(parent_logger, level: :debug) }
-
-    describe "#fatal" do
-      it "can log fatal messages" do
-        logs = capture_logger(logger) { logger.fatal("msg") }
-        expect(logs).to include_log_entry(level: :fatal, message: "msg")
-      end
-
-      it "does not log error messages when the level is higher" do
-        logger.level = :unknown
-        logger.error("msg")
-        expect(out.string).to be_empty
-      end
-
-      it "can log fatal messages with a block" do
-        logs = capture_logger(logger) { logger.fatal { "msg from block" } }
-        expect(logs).to include_log_entry(level: :fatal, message: "msg from block")
-      end
+  describe "#add_log_attributes" do
+    before do
+      parent_logger.level = :info
     end
 
-    describe "#error" do
-      it "can log error messages" do
-        logs = capture_logger(logger) { logger.error("msg") }
-        expect(logs).to include_log_entry(level: :error, message: "msg")
-      end
-
-      it "does not log error messages when the level is higher" do
-        logger.level = :fatal
-        logger.error("msg")
-        expect(out.string).to be_empty
-      end
-
-      it "can log error messages with a block" do
-        logs = capture_logger(logger) { logger.error { "msg from block" } }
-        expect(logs).to include_log_entry(level: :error, message: "msg from block")
-      end
+    it "does not change the method signature" do
+      expect(MyClass.instance_method(:perform).arity).to eq(MyClass.instance_method(:shadow_perform).arity)
     end
 
-    describe "#warn" do
-      it "can log warn messages" do
-        logs = capture_logger(logger) { logger.warn("msg") }
-        expect(logs).to include_log_entry(level: :warn, message: "msg")
-      end
-
-      it "does not log warn messages when the level is higher" do
-        logger.level = :error
-        logger.warn("msg")
-        expect(out.string).to be_empty
-      end
-
-      it "can log warn messages with a block" do
-        logs = capture_logger(logger) { logger.warn { "msg from block" } }
-        expect(logs).to include_log_entry(level: :warn, message: "msg from block")
-      end
+    it "returns the expected value" do
+      expect(MyClass.new("foobar").perform("foobar")).to eq("FOOBAR")
     end
 
-    describe "#info" do
-      it "can log info messages" do
-        logs = capture_logger(logger) { logger.info("msg") }
-        expect(logs).to include_log_entry(level: :info, message: "msg")
-      end
+    it "wraps a method with logging meta data" do
+      logs = capture_logger(parent_logger) { MyClass.new("foobar").perform("arg1", option: "arg2") }
+      expect(logs).to(
+        include_log_entry(
+          message: "Performing action",
+          attributes: {
+            component: "MyClass",
+            action: "foobar",
+            method: "perform",
+            value: "arg1",
+            option: "arg2"
+          }
+        )
+      )
 
-      it "does not log info messages when the level is higher" do
-        logger.level = :warn
-        logger.info("msg")
-        expect(out.string).to be_empty
-      end
-
-      it "can log info messages with a block" do
-        logs = capture_logger(logger) { logger.info { "msg from block" } }
-        expect(logs).to include_log_entry(level: :info, message: "msg from block")
-      end
+      expect(logs).to include_log_entry(message: "Calling upcase", attributes: {component: nil})
+      expect(logs).to_not include_log_entry(message: "Calling upcase", attributes: {method: "perform"})
     end
 
-    describe "#debug" do
-      it "can log debug messages" do
-        logs = capture_logger(logger) { logger.debug("msg") }
-        expect(logs).to include_log_entry(level: :debug, message: "msg")
-      end
-
-      it "does not log debug messages when the level is higher" do
-        logger.level = :info
-        logger.debug("msg")
-        expect(out.string).to be_empty
-      end
-
-      it "can log debug messages with a block" do
-        logs = capture_logger(logger) { logger.debug { "msg from block" } }
-        expect(logs).to include_log_entry(level: :debug, message: "msg from block")
-      end
+    it "handles calling the logging setup block without optional values" do
+      logs = capture_logger(parent_logger) { MyClass.new("foobar").perform("arg1") }
+      expect(logs).to include_log_entry(message: "Performing action", attributes: {component: "MyClass", action: "foobar", method: "perform", value: "arg1"})
     end
 
-    describe "#unknown" do
-      it "can log unknown messages" do
-        logs = capture_logger(logger) { logger.unknown("msg") }
-        expect(logs).to include_log_entry(level: :unknown, message: "msg")
-      end
-
-      it "can log unknown messages with a block" do
-        logs = capture_logger(logger) { logger.unknown { "msg from block" } }
-        expect(logs).to include_log_entry(level: :unknown, message: "msg from block")
-      end
+    it "adds attributes without the optional block" do
+      logs = capture_logger(parent_logger) { MyClass.new("foobar").debug_perform("arg1", option: "arg2") }
+      expect(logs).to include_log_entry(message: "Performing action", attributes: {debugging: "local"})
     end
 
-    describe "#add" do
-      it "can add a new log message" do
-        logs = capture_logger(logger) { logger.add(Logger::INFO, "New log message") }
-        expect(logs).to include_log_entry(level: :info, message: "New log message")
-      end
+    it "merges adds attributes from wrapped method calling each other" do
+      logs = capture_logger(parent_logger) { MyClass.new("foobar").debug_perform("arg1", option: "arg2") }
+      expect(logs).to(
+        include_log_entry(
+          message: "Performing action",
+          attributes: {
+            component: "MyClass",
+            action: "foobar",
+            method: "perform",
+            value: "arg1",
+            option: "arg2",
+            debugging: "local"
+          }
+        )
+      )
     end
 
-    describe "#<<" do
-      it "can log messages using the shovel operator" do
-        logs = capture_logger(logger) { logger << "msg" }
-        expect(logs).to include_log_entry(level: :UNKNOWN, message: "msg")
-      end
+    it "handles a block defined without the method arguments" do
+      logs = capture_logger(parent_logger) { MyClass.new("foobar").execute("arg1") }
+      expect(logs).to include_log_entry(message: "Calling execute", attributes: {execute: "foobar"})
+    end
+
+    it "can access instance variables in the block" do
+      logs = capture_logger(parent_logger) { MyClass.new("foobar").execute("arg1") }
+      expect(logs).to include_log_entry(message: "Calling execute", attributes: {big_action: "FOOBAR"})
     end
   end
 end

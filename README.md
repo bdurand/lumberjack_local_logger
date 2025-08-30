@@ -4,207 +4,161 @@
 [![Ruby Style Guide](https://img.shields.io/badge/code_style-standard-brightgreen.svg)](https://github.com/testdouble/standard)
 [![Gem Version](https://badge.fury.io/rb/lumberjack_local_logger.svg)](https://badge.fury.io/rb/lumberjack_local_logger)
 
-This gem provides a lightweight wrapper around a `Lumberjack::Logger` from the [lumberjack](https://github.com/bdurand/lumberjack) gem that allows you to set a different level, progname, and tags. It is useful for scenarios where you want to attach different metadata or have a different logging level for specific parts of your code without affecting the global logger settings or needing to configure multiple loggers.
+This gem provides mechanism for setting up a logger for local code that inherits from a parent logger. The local logger will output to the same destination as the parent logger but can set a different level, progname, and attributes. It is useful for scenarios where you want to attach different metadata or have a different logging level for specific parts of your code without affecting the global logger settings or needing to configure multiple loggers.
 
-The `Lumberjack::LocalLogger` acts as a proxy to a parent logger, forwarding all logging calls while applying its own local overrides for level, progname, and tags. This enables you to create contextual loggers that can have different behavior while still writing to the same underlying log destination.
-
-**Key Features:**
-
-- **Local Log Levels**: Set a different logging level for specific components without changing the parent logger.
-- **Contextual Tags**: Attach metadata tags that will be included with all log messages.
-- **Custom Prognames**: Add component-specific program names to identify log sources.
-- **Thread-Safe**: Supports temporary level changes within blocks using thread-local storage.
-- **Full Logger API**: Implements the complete Ruby Logger interface with proxy support for parent logger methods.
-- **Zero Configuration**: Works with any existing Lumberjack::Logger instance.
-- **Helper Module**: Provides a convenient way to set up local loggers in your classes and isolate logging metadata from business logic.
+This gem requires the [lumberjack](https://github.com/bdurand/lumberjack) gem.
 
 ## Usage
 
-### Basic Example
+### Basic Setup
+
+First, configure the default logger for the gem (typically in an initializer):
 
 ```ruby
-require "lumberjack"
-require "lumberjack_local_logger"
+# In a Rails application, add this to an initializer (e.g., config/initializers/logging.rb)
+Lumberjack::LocalLogger.default_logger = Rails.logger
 
-# Create a parent logger
-parent_logger = Lumberjack::Logger.new(STDOUT, level: :info)
-
-# Create a local logger with different settings
-local_logger = Lumberjack::LocalLogger.new(
-  parent_logger,
-  level: :debug, # Optional; sets the level just for this logger
-  progname: "MyComponent", # Optional; sets a different program name
-  tags: { user_id: 12345, request_id: "abc-123" } # Optional; adds tags to all messages
-)
-
-# The local logger can log debug messages even though parent is set to info
-local_logger.debug("This will appear in the log")  # ✓ Logs with debug level
-parent_logger.debug("This will not appear")        # ✗ Filtered out by parent's info level
-
-# Meta data is included in all log messages
-local_logger.info("Processing user data")
-# Output will include the progname and tags in the log entry
+# Or for a standalone application
+require 'lumberjack'
+Lumberjack::LocalLogger.default_logger = Lumberjack::Logger.new(STDOUT)
 ```
 
-### Extended Example: Overriding The Local Log Level
+### Including LocalLogger in Your Classes
 
-A use case for a local logger is to provide a different log level for specific parts of your application without affecting the global logger settings. This is particularly useful in scenarios where you want to increase the verbosity of logging for debugging purposes in a specific component or module.
-
-> [!NOTE]
-> This example uses the [super_settings](https://github.com/bdurand/super_settings) gem to provide a runtime value to control the log level.
+Include the `Lumberjack::LocalLogger` module in your class and configure the local logger:
 
 ```ruby
-# Module that adds a local logger to a class. The logger can dynamically have debug logging
-# turned on by adding the class name to the debug_logs_enabled setting.
-module LocalLogging
-  def self.included(base)
-    base.extend(ClassMethods)
+class UserService
+  include Lumberjack::LocalLogger
+
+  # Configure the local logger for this class
+  setup_logger do |logger|
+    logger.level = :info
+    logger.progname = "UserService"
+    logger.tag!(component: "user_management", service: "user_service")
   end
 
-  module ClassMethods
-    def logger
-      @local_logger ||= Lumberjack::LocalLogger.new(Application.logger)
-    end
+  def create_user(email, name)
+    user = User.create!(email: email, name: name)
 
-    def with_local_log_level(&block)
-      level = :debug if SuperSettings.array("debug_logs_enabled", []).include?(name)
-      logger.with_local_level(level, &block)
-    end
-  end
+    # Log entries will include the metadata set in setup_logger
+    logger.info("User created successfully", user_id: user.id)
 
-  def logger
-    self.class.logger
-  end
-
-  def with_local_log_level(&block)
-    self.class.with_local_log_level(&block)
+    user
   end
 end
+```
 
-class MyService
-  include LocalLogging
+### Setting Parent Logger for Specific Classes
 
-  def initialize(params)
-    @params = params
+You can set a different parent logger for specific classes instead of using the default:
+
+```ruby
+class DatabaseService
+  include Lumberjack::LocalLogger
+
+  # Set a specific parent logger for this class
+  self.parent_logger = Lumberjack::Logger.new("db.log", level: :debug)
+
+  # You can also set the parent logger in the setup_logger call.
+  setup_logger(from: Database.logger) do |logger|
+    logger.progname = "DatabaseService"
+    logger.tag!(component: "database")
+  end
+end
+```
+
+### Separating logging setup from business logic
+
+Use `add_log_attributes` to automatically add metadata to all log entries within a specific method. This can be useful for keeping logging concerns separate from business logic.
+
+```ruby
+class PaymentService
+  include Lumberjack::LocalLogger
+
+  def process_payment(amount, currency, payment_method)
+    # These log entries will include the metadata set in add_log_attributes.
+    logger.info("Starting payment processing")
+
+    result = charge_payment(amount, currency, payment_method)
+
+    logger.info("Payment processed")
+    result
   end
 
-  def perform
-    with_local_log_level do
-      # Debug logs can enabled dynamically but only for these log statements.
-      logger.debug("Performing action with #{@params.inspect}")
-
-      # Anything logged in this class will use the regular log level.
-      result = ResultFetcher.new(params).result
-
-      logger.debug("Got result: #{result.inspect}")
-
-      # The local logger level will still be set inside this local method
-      process_result(result)
-    end
-  end
+  # Add attributes to all log entries in the process_payment method. A new log context
+  # will be created with these attributes set for the duration of the method call.
+  # Any log entries made with the local logger will include these attributes
+  # until the method exits.
+  add_log_attributes(:process_payment, payment_flow: "standard", version: "v2")
 
   private
 
-  def process_result(result)
-    # Process the result here
+  def charge_payment(amount, currency, payment_method)
+    payment = Payment.new(amount: amount, currency: currency, method: payment_method)
+
+    # This log entry will also include the attributes added by add_log_attributes
+    # when it is called from the `process_payment` method.
+    logger.info("Charged payment", charge_id: payment.charge_id, status: payment.status)
+
+    { status: payment.status, charge_id: payment.charge_id }
   end
 end
 ```
 
-### Local Log Helper
-
-The Local Log Helper provides a convenient way to add logging functionality to your classes. By including the `Lumberjack::LocalLogger::Helper` module, you can easily set up a local logger with custom settings.
-
-First, you need to set up a default logger (typically in an initializer):
+You can also provide a block to the `add_log_attributes` method to set further attributes on the logger. The block will be called with the same arguments as the specified method.
 
 ```ruby
-# In a Rails application, add this to config/initializers/logging.rb:
-Lumberjack::LocalLogger::Helper.default_logger = Rails.logger
+class UserPaymentService
+  include Lumberjack::LocalLogger
 
-# Or for non-Rails applications:
-Lumberjack::LocalLogger::Helper.default_logger = Lumberjack::Logger.new(STDOUT)
-```
+  attr_reader :user_id
 
-Then you can use the helper in your classes:
-
-```ruby
-class MyClass
-  include Lumberjack::LocalLogger::Helper
-
-  # Set tags that will be recorded on all log entries made in this class.
-  self.logger_tags = {component: "MyClass"}
-
-  # Set a logger level for the logger on this class. This will override the default logger level.
-  self.logger_level = :info
-
-  def initialize(action_name)
-    @action = action_name
+  def initialize(user_id)
+    @user_id = user_id
   end
 
-  def perform(user_id, roles: [])
-    logger.info("Performing action #{@action} for user #{user_id}")
-    OtherClass.new(user_id, roles).perform
+  def process_payment(amount, currency, payment_method)
+    ...
   end
 
-  # This method wraps the `perform` with log tags. The "method" tag will
-  # be added to the local logger for the duration of each method call while
-  # the "topic" tag will be added to the parent logger for the duration of
-  # the method call.
-  add_log_tags_to_method(:perform, local_tags: {method: "perform"}, global_tags: {topic: "my_class"}) do |user_id, roles:|
-    # The optional block will be called with the original method arguments.
-
-    # Add user_id and roles to all log entries for the duration of the method call
-    logger.tag(user_id: user_id, roles: roles)
-
-    # Add the instance action only to local logger entries for the duration of the method call.
-    # Within the block you can call instance methods and access instance variables.
-    logger.tag_local(action: @action)
+  add_log_attributes(:process_payment) do |amount, currency, payment_method|
+    logger.tag(
+      amount: amount,
+      currency: currency,
+      payment_method: payment_method,
+      user_id: user_id # You can also call instance methods from the block
+    )
   end
 end
 ```
 
-### Adding Local Tags
+### Inheritance and Logger Hierarchy
 
-You can add tags to your local logger in several ways:
-
-#### Permanent Tags
-
-In addition to the tags set up on the constructor, you can also add more tags with `add_local_tags`.
+Local loggers work with class inheritance:
 
 ```ruby
-# Add tags permanently to the logger instance
-local_logger.add_local_tags(service: "user_service", version: "1.2")
+class BaseService
+  include Lumberjack::LocalLogger
 
-# Remove specific tags
-local_logger.remove_local_tags(:version)
-```
-
-#### Temporary Tags with Blocks
-
-You can call `tag_local` with a block to temporarily add tags for the duration of the block.
-
-```ruby
-local_logger.tag_local(request_id: "abc-123") do
-  local_logger.info("Processing request")  # Will include request_id tag
-end
-```
-
-Calls to `tag_local` can be nested.
-
-```ruby
-local_logger.tag_local(user_id: 123) do
-  local_logger.tag_local(action: "update") do
-    local_logger.info("User action")  # Will include both user_id and action tags
+  setup_logger do |logger|
+    logger.progname = "BaseService"
+    logger.tag!(app: "MyApp")
   end
 end
-```
 
-Calling `tag_local` without a block will add the tags to the current block. If there is not a current `tag_local` block then no tags will be added.
+class EmailService < BaseService
+  # Inherits the parent logger and adds additional configuration
+  setup_logger do |logger|
+    logger.tag!(service: "EmailService")
+    logger.level = :debug
+    logger.progname = "EmailService"
+  end
 
-```ruby
-local_logger.tag_local(action: "update") do
-  local_logger.tag(user_id: 123)
-  local_logger.info("User action")  # Will include both user_id and action tags
+  def send_email(to, subject)
+    # This will log with both app: "MyApp" and service: "EmailService" attributes
+    logger.debug("Sending email", to: to, subject: subject)
+  end
 end
 ```
 
