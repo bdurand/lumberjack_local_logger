@@ -51,7 +51,7 @@ end
 
 ### Setting Parent Logger for Specific Classes
 
-You can set a different parent logger for specific classes instead of using the default:
+You can set a different parent logger for specific classes instead of using the default. The parent logger will be inherited by the local logger and used as the base for all logging operations.
 
 ```ruby
 class DatabaseService
@@ -60,7 +60,16 @@ class DatabaseService
   # Set a specific parent logger for this class
   self.parent_logger = Lumberjack::Logger.new("db.log", level: :debug)
 
-  # You can also set the parent logger in the setup_logger call.
+  setup_logger do |logger|
+    logger.progname = "DatabaseService"
+    logger.tag!(component: "database")
+  end
+end
+
+# Alternatively, you can set the parent logger in the setup_logger call with the `from` option.
+class DatabaseService
+  include Lumberjack::LocalLogger
+
   setup_logger(from: Database.logger) do |logger|
     logger.progname = "DatabaseService"
     logger.tag!(component: "database")
@@ -68,7 +77,7 @@ class DatabaseService
 end
 ```
 
-### Separating logging setup from business logic
+### Separating Logging Setup from Business Logic
 
 Use `add_log_attributes` to automatically add metadata to all log entries within a specific method. This can be useful for keeping logging concerns separate from business logic.
 
@@ -90,6 +99,7 @@ class PaymentService
   # will be created with these attributes set for the duration of the method call.
   # Any log entries made with the local logger will include these attributes
   # until the method exits.
+  # NOTE: The method must be defined before calling add_log_attributes.
   add_log_attributes(:process_payment, payment_flow: "standard", version: "v2")
 
   private
@@ -122,6 +132,7 @@ class UserPaymentService
     ...
   end
 
+  # NOTE: The method must be defined before calling add_log_attributes.
   add_log_attributes(:process_payment) do |amount, currency, payment_method|
     logger.tag(
       amount: amount,
@@ -135,7 +146,7 @@ end
 
 ### Inheritance and Logger Hierarchy
 
-Local loggers work with class inheritance:
+Local loggers work with class inheritance. Child classes inherit the parent logger configuration and can extend it:
 
 ```ruby
 class BaseService

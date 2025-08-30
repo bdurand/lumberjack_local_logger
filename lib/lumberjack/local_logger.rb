@@ -2,16 +2,38 @@
 
 # Helper module for setting up a local logger for a class.
 #
-# @example
+# This module provides functionality to create a local logger that inherits from a parent logger
+# but can have different settings such as level, progname, and attributes. It's useful for creating
+# contextual logging within specific classes without affecting the global logger configuration.
 #
-# # The default logger needs to be setup in an intializer when the application starts.
-# # In a Rails application you would call this from an initializer:
-# Lumberjack::LocalLogger.default_logger = Rails.logger
+# @example Basic usage
+#   # Set up the default logger (typically in an initializer)
+#   Lumberjack::LocalLogger.default_logger = Rails.logger
 #
+#   class UserService
+#     include Lumberjack::LocalLogger
+#
+#     setup_logger do |logger|
+#       logger.level = :info
+#       logger.progname = "UserService"
+#       logger.tag!(component: "user_management")
+#     end
+#
+#     def create_user(email, name)
+#       logger.info("Creating user", email: email)
+#       # ... business logic ...
+#     end
+#   end
 module Lumberjack::LocalLogger
   class << self
+    # @!attribute [rw] default_logger
+    #   @return [Lumberjack::ContextLogger, nil] The default logger to use when no parent logger is specified
     attr_accessor :default_logger
 
+    # Called when the module is included in a class. Sets up the ClassMethods module.
+    #
+    # @param base [Class] The class that is including this module
+    # @return [void]
     def included(base)
       base.extend(ClassMethods)
     end
@@ -20,13 +42,13 @@ module Lumberjack::LocalLogger
   module ClassMethods
     # Sets up the local logger for the class. This can be used to set default attributes, level, and progname.
     #
-    # @param from [Lumberjack::ContextLogger] Specify the parent logger to use. This is shorthand for
+    # @param from [Lumberjack::ContextLogger, nil] Specify the parent logger to use. This is shorthand for
     #   calling `self.parent_logger = parent_logger`.
-    # @param block [Proc] A block that will be called with the local logger instance when it is created. You
+    # @param block [Proc, nil] A block that will be called with the local logger instance when it is created. You
     #   can use this block to set the local logger's attributes, level, and progname.
     # @return [void]
     #
-    # @example
+    # @example Basic setup
     #   class MyClass
     #     include Lumberjack::LocalLogger
     #
@@ -36,24 +58,60 @@ module Lumberjack::LocalLogger
     #       logger.tag!(component: "system_component")
     #     end
     #   end
+    #
+    # @example With specific parent logger
+    #   class MyClass
+    #     include Lumberjack::LocalLogger
+    #
+    #     setup_logger(from: custom_logger) do |logger|
+    #       logger.level = :info
+    #     end
+    #   end
     def setup_logger(from = nil, &block)
       @__logger_setup_block = block
       self.parent_logger = from if from
     end
 
-    # Wraps a method with logging functionality, allowing for local attributes and global attributes to be set.
+    # Wraps a method with logging functionality, allowing for local attributes to be set.
     # This can be useful to keep logging concerns separate from business logic to keep your code clean.
     #
-    # @params method_name [Symbol] The name of the instance method to wrap. The method must already
+    # The method must already be defined before calling this method.
+    #
+    # @param method_name [Symbol] The name of the instance method to wrap. The method must already
     #   have been defined before calling this method.
-    # @params local_attributes [Hash] Attributes to set on the local logger. These attributes will be added to all log
+    # @param attributes [Hash] Attributes to set on the local logger. These attributes will be added to all log
     #   entries made by the local logger during the method call.
-    # @params global_attributes [Hash] Attributes to set on the parent logger. These attributes will be added to all log
-    #   entries made by the parent logger during the method call even those made outside of this class.
-    # @params block [Proc] An optional block to execute within the context of the wrapped method. The
+    # @param block [Proc, nil] An optional block to execute within the context of the wrapped method. The
     #   block will be called with the original method arguments. You can add additional logging related
     #   code in this block like setting log attributes based on the method arguments.
     # @return [void]
+    # @raise [ArgumentError] If the method is not already defined
+    #
+    # @example Basic usage with static attributes
+    #   class PaymentService
+    #     include Lumberjack::LocalLogger
+    #
+    #     def process_payment(amount, currency)
+    #       logger.info("Processing payment")
+    #       # ... business logic ...
+    #     end
+    #
+    #     add_log_attributes(:process_payment, service: "payment", version: "v2")
+    #   end
+    #
+    # @example With dynamic attributes using a block
+    #   class PaymentService
+    #     include Lumberjack::LocalLogger
+    #
+    #     def process_payment(amount, currency)
+    #       logger.info("Processing payment")
+    #       # ... business logic ...
+    #     end
+    #
+    #     add_log_attributes(:process_payment) do |amount, currency|
+    #       logger.tag(amount: amount, currency: currency)
+    #     end
+    #   end
     def add_log_attributes(method_name, attributes = {}, &block)
       unless instance_methods.include?(method_name.to_sym)
         raise ArgumentError, "Method #{method_name} is not defined"
@@ -93,7 +151,7 @@ module Lumberjack::LocalLogger
     # Set the parent logger for this class. This logger will be used as the base logger for the local logger.
     # If this is not set, then the value in `Lumberjack::LocalLogger.default_logger` will be used.
     #
-    # @param value [Lumberjack::ContextLogger] The parent logger to set.
+    # @param value [Lumberjack::ContextLogger, nil] The parent logger to set.
     # @return [void]
     def parent_logger=(value)
       @__local_logger_parent_logger = value
@@ -112,8 +170,9 @@ module Lumberjack::LocalLogger
     end
 
     # Get the local logger for the class. If no parent logger is defined, this will return nil.
+    # The local logger is a fork of the parent logger with any configuration applied in the setup_logger block.
     #
-    # @return [Lumberjack::LocalLogger, nil] The local logger for the class or nil if not defined.
+    # @return [Lumberjack::ContextLogger, nil] The local logger for the class or nil if not defined.
     def logger
       return @__local_logger_logger if defined?(@__local_logger_logger) && @__local_logger_logger
 
@@ -136,10 +195,12 @@ module Lumberjack::LocalLogger
 
     private
 
-    # Builds the method signature and call args based on the method parameters
+    # Builds the method signature and call args based on the method parameters.
+    # This is used internally by add_log_attributes to generate the wrapper method.
     #
-    # @param parameters [Array] The parameters array from Method#parameters
+    # @param parameters [Array<Array>] The parameters array from Method#parameters
     # @return [Array<String>] An array containing [signature, call_args]
+    # @api private
     def build_add_log_attributes_to_method_signature_and_call_args(parameters)
       signature_parts = []
       call_parts = []
@@ -174,9 +235,10 @@ module Lumberjack::LocalLogger
     end
   end
 
-  # Get the local logger for the class. If no parent logger is defined, this will return nil.
+  # Get the local logger for the instance. This returns the same logger as the class method.
+  # If no parent logger is defined, this will return nil.
   #
-  # @return [Lumberjack::LocalLogger, nil] The local logger for the class or nil if not defined.
+  # @return [Lumberjack::ContextLogger, nil] The local logger for the class or nil if not defined.
   def logger
     self.class.logger
   end
