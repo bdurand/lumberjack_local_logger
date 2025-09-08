@@ -86,6 +86,12 @@ describe Lumberjack::LocalLogger do
     InheritingSubclass.parent_logger = nil
   end
 
+  describe "VERSION" do
+    it "has a version number" do
+      expect(Lumberjack::LocalLogger::VERSION).not_to be nil
+    end
+  end
+
   describe ".parent_logger" do
     it "returns the parent logger" do
       expect(MyClass.parent_logger).to equal(parent_logger)

@@ -25,6 +25,8 @@
 #     end
 #   end
 module Lumberjack::LocalLogger
+  VERSION = File.read(File.join(__dir__, "..", "..", "VERSION")).strip.freeze
+
   class << self
     # @!attribute [rw] default_logger
     #   @return [Lumberjack::ContextLogger, nil] The default logger to use when no parent logger is specified
