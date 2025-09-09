@@ -28,8 +28,9 @@ module Lumberjack::LocalLogger
   VERSION = File.read(File.join(__dir__, "..", "..", "VERSION")).strip.freeze
 
   class << self
-    # @!attribute [rw] default_logger
-    #   @return [Lumberjack::ContextLogger, nil] The default logger to use when no parent logger is specified
+    # The default logger to use when no parent logger is specified.
+    #
+    # @return [Lumberjack::ContextLogger, nil] the default logger
     attr_accessor :default_logger
 
     # Called when the module is included in a class. Sets up the ClassMethods module.
@@ -45,7 +46,7 @@ module Lumberjack::LocalLogger
     # Sets up the local logger for the class. This can be used to set default attributes, level, and progname.
     #
     # @param from [Lumberjack::ContextLogger, nil] Specify the parent logger to use. This is shorthand for
-    #   calling `self.parent_logger = parent_logger`.
+    #   calling `self.parent_logger = from`.
     # @param block [Proc, nil] A block that will be called with the local logger instance when it is created. You
     #   can use this block to set the local logger's attributes, level, and progname.
     # @return [void]

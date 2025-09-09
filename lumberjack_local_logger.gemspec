@@ -4,7 +4,7 @@ Gem::Specification.new do |spec|
   spec.authors = ["Brian Durand"]
   spec.email = ["bbdurand@gmail.com"]
 
-  spec.summary = "Lightweight wrapper around Lumberjack::Logger that allows contextual logging with custom levels, prognames, and attributes without affecting the parent logger."
+  spec.summary = "Module for creating contextual local loggers that inherit from a parent Lumberjack logger with custom levels, prognames, and attributes."
   spec.homepage = "https://github.com/bdurand/lumberjack_local_logger"
   spec.license = "MIT"
 
