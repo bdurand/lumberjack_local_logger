@@ -30,7 +30,7 @@ module Lumberjack::LocalLogger
   class << self
     # The default logger to use when no parent logger is specified.
     #
-    # @return [Lumberjack::Logger, nil] the default logger
+    # @return [Lumberjack::ContextLogger, nil] the default logger
     attr_accessor :default_logger
 
     # Called when the module is included in a class. Sets up the ClassMethods module.
