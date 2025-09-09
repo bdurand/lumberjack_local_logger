@@ -71,7 +71,7 @@ end
 class AnalyticsService
   include Lumberjack::LocalLogger
 
-  setup_logger(from: Database.logger) do |logger|
+  setup_logger(from: some_other_logger) do |logger|
     logger.progname = "AnalyticsService"
     logger.tag!(component: "analytics")
   end
