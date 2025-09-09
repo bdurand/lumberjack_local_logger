@@ -4,7 +4,7 @@
 [![Ruby Style Guide](https://img.shields.io/badge/code_style-standard-brightgreen.svg)](https://github.com/testdouble/standard)
 [![Gem Version](https://badge.fury.io/rb/lumberjack_local_logger.svg)](https://badge.fury.io/rb/lumberjack_local_logger)
 
-This gem provides mechanism for setting up a logger for local code that inherits from a parent logger. The local logger will output to the same destination as the parent logger but can set a different level, progname, and attributes. It is useful for scenarios where you want to attach different metadata or have a different logging level for specific parts of your code without affecting the global logger settings or needing to configure multiple loggers.
+This gem provides a mechanism for setting up a logger for local code that inherits from a parent logger. The local logger will output to the same destination as the parent logger but can set a different level, progname, and attributes. It is useful for scenarios where you want to attach different metadata or have a different logging level for specific parts of your code without affecting the global logger settings or needing to configure multiple loggers.
 
 This gem requires the [lumberjack](https://github.com/bdurand/lumberjack) gem.
 
@@ -20,6 +20,7 @@ Lumberjack::LocalLogger.default_logger = Rails.logger
 
 # Or for a standalone application
 require 'lumberjack'
+require 'lumberjack_local_logger'
 Lumberjack::LocalLogger.default_logger = Lumberjack::Logger.new(STDOUT)
 ```
 
@@ -67,12 +68,12 @@ class DatabaseService
 end
 
 # Alternatively, you can set the parent logger in the setup_logger call with the `from` option.
-class DatabaseService
+class AnalyticsService
   include Lumberjack::LocalLogger
 
   setup_logger(from: Database.logger) do |logger|
-    logger.progname = "DatabaseService"
-    logger.tag!(component: "database")
+    logger.progname = "AnalyticsService"
+    logger.tag!(component: "analytics")
   end
 end
 ```

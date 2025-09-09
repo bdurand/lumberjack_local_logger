@@ -25,11 +25,13 @@
 #     end
 #   end
 module Lumberjack::LocalLogger
+  # The version number of the gem
   VERSION = File.read(File.join(__dir__, "..", "..", "VERSION")).strip.freeze
 
   class << self
-    # @!attribute [rw] default_logger
-    #   @return [Lumberjack::ContextLogger, nil] The default logger to use when no parent logger is specified
+    # The default logger to use when no parent logger is specified.
+    #
+    # @return [Lumberjack::Logger, nil] the default logger
     attr_accessor :default_logger
 
     # Called when the module is included in a class. Sets up the ClassMethods module.
@@ -44,8 +46,8 @@ module Lumberjack::LocalLogger
   module ClassMethods
     # Sets up the local logger for the class. This can be used to set default attributes, level, and progname.
     #
-    # @param from [Lumberjack::ContextLogger, nil] Specify the parent logger to use. This is shorthand for
-    #   calling `self.parent_logger = parent_logger`.
+    # @param from [Lumberjack::Logger, nil] Specify the parent logger to use. This is shorthand for
+    #   calling `self.parent_logger = from`.
     # @param block [Proc, nil] A block that will be called with the local logger instance when it is created. You
     #   can use this block to set the local logger's attributes, level, and progname.
     # @return [void]
@@ -153,7 +155,7 @@ module Lumberjack::LocalLogger
     # Set the parent logger for this class. This logger will be used as the base logger for the local logger.
     # If this is not set, then the value in `Lumberjack::LocalLogger.default_logger` will be used.
     #
-    # @param value [Lumberjack::ContextLogger, nil] The parent logger to set.
+    # @param value [Lumberjack::Logger, nil] The parent logger to set.
     # @return [void]
     def parent_logger=(value)
       @__local_logger_parent_logger = value
@@ -164,7 +166,7 @@ module Lumberjack::LocalLogger
     # one will be looked up in the superclass chain. If no superclass has set a parent logger, then
     # the value in `Lumberjack::LocalLogger.default_logger` will be used.
     #
-    # @return [Lumberjack::ContextLogger, nil] The parent logger for this class or nil if no parent logger is set.
+    # @return [Lumberjack::Logger, nil] The parent logger for this class or nil if no parent logger is set.
     def parent_logger
       parent = @__local_logger_parent_logger if defined?(@__local_logger_parent_logger)
       parent ||= superclass.parent_logger if superclass.include?(Lumberjack::LocalLogger)
@@ -240,7 +242,7 @@ module Lumberjack::LocalLogger
   # Get the local logger for the instance. This returns the same logger as the class method.
   # If no parent logger is defined, this will return nil.
   #
-  # @return [Lumberjack::ContextLogger, nil] The local logger for the class or nil if not defined.
+  # @return [Lumberjack::ContextLogger, nil] The local logger for the instance or nil if not defined.
   def logger
     self.class.logger
   end
