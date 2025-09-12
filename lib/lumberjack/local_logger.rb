@@ -246,3 +246,5 @@ module Lumberjack::LocalLogger
     self.class.logger
   end
 end
+
+require_relative "local_logger/railtie" if defined?(Rails::Railtie)
