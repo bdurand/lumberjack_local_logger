@@ -5,7 +5,7 @@ require "lumberjack/capture_device/rspec"
 
 require_relative "../lib/lumberjack_local_logger"
 
-Lumberjack.deprecation_mode = "raise"
+Lumberjack.deprecation_mode = :raise
 Lumberjack.raise_logger_errors = true
 
 RSpec.configure do |config|

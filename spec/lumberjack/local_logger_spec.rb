@@ -72,7 +72,7 @@ class UpCaser
   end
 end
 
-describe Lumberjack::LocalLogger do
+RSpec.describe Lumberjack::LocalLogger do
   let(:parent_logger) { Lumberjack::Logger.new(:test, level: :warn) }
   let(:last_entry) { parent_logger.device.entries.last }
 
