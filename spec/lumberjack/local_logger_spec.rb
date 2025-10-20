@@ -6,7 +6,7 @@ class MyClass
   include Lumberjack::LocalLogger
 
   setup_logger do |logger|
-    logger.tag!(component: -> { name })
+    logger.tag!(component: -> { name }, aspect: "base_class")
     logger.level = :info
     logger.progname = "my_class"
   end
@@ -52,7 +52,7 @@ end
 
 class MySubclass < MyClass
   setup_logger do |logger|
-    logger.tag!(subcomponent: "MySubclass")
+    logger.tag!(subcomponent: "MySubclass", aspect: "subclass")
     logger.level = :debug
     logger.progname = "MySubclassProgram"
   end
@@ -151,12 +151,12 @@ RSpec.describe Lumberjack::LocalLogger do
 
     it "inherits the superclass logger attributes" do
       InheritingSubclass.logger.info("test")
-      expect(last_entry.attributes).to eq({"component" => "MyClass"})
+      expect(last_entry.attributes).to eq({"component" => "MyClass", "aspect" => "base_class"})
     end
 
     it "can merges the superclass logger attributes" do
       MySubclass.logger.info("test")
-      expect(last_entry.attributes).to eq({"component" => "MyClass", "subcomponent" => "MySubclass"})
+      expect(last_entry.attributes).to eq({"component" => "MyClass", "subcomponent" => "MySubclass", "aspect" => "subclass"})
       expect(MySubclass.logger.level).to eq(Logger::DEBUG)
       expect(MySubclass.logger.progname).to eq("MySubclassProgram")
     end
@@ -164,7 +164,7 @@ RSpec.describe Lumberjack::LocalLogger do
     it "calls procs for dynamic attributes at runtime from the class binding" do
       logger = MySubclass.logger
       logger.info("test")
-      expect(last_entry.attributes).to eq({"component" => "MyClass", "subcomponent" => "MySubclass"})
+      expect(last_entry.attributes).to eq({"component" => "MyClass", "subcomponent" => "MySubclass", "aspect" => "subclass"})
     end
   end
 
