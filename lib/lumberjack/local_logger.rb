@@ -27,6 +27,13 @@
 module Lumberjack::LocalLogger
   VERSION = File.read(File.join(__dir__, "..", "..", "VERSION")).strip.freeze
 
+  # Sentinel value used in generated wrapper methods to distinguish omitted optional
+  # arguments from explicitly passed values. This cannot be a private constant because
+  # it is referenced by its fully qualified name in generated code.
+  #
+  # @api private
+  UNSET = Object.new.freeze
+
   class << self
     # The default logger to use when no parent logger is specified.
     #
@@ -70,8 +77,9 @@ module Lumberjack::LocalLogger
     #       logger.level = :info
     #     end
     #   end
-    def setup_logger(from = nil, &block)
+    def setup_logger(from: nil, &block)
       @__logger_setup_block = block
+      @__local_logger_logger = nil
       self.parent_logger = from if from
     end
 
@@ -116,8 +124,17 @@ module Lumberjack::LocalLogger
     #     end
     #   end
     def add_log_attributes(method_name, attributes = {}, &block)
-      unless instance_methods.include?(method_name.to_sym)
+      method_name = method_name.to_sym
+      unless method_defined?(method_name) || private_method_defined?(method_name)
         raise ArgumentError, "Method #{method_name} is not defined"
+      end
+
+      visibility = if private_method_defined?(method_name)
+        :private
+      elsif protected_method_defined?(method_name)
+        :protected
+      else
+        :public
       end
 
       static_local_attributes = Lumberjack::Utils.flatten_attributes(attributes)
@@ -125,28 +142,17 @@ module Lumberjack::LocalLogger
       # Get the original method to inspect its signature
       original_method = instance_method(method_name)
 
-      # Generate method signature components
-      signature, call_args = build_add_log_attributes_to_method_signature_and_call_args(original_method.parameters)
-
       wrapper_module = Module.new
 
-      # Create a lambda that captures the closure variables
-      data_accessor = lambda { [block, static_local_attributes] }
+      # Stash the block and attributes in a private constant on the wrapper module. The
+      # generated method references the constant lexically, so each wrapper always reads
+      # its own data even when the same method is wrapped again in a subclass.
+      wrapper_module.const_set(:LOCAL_LOG_DATA, [block, static_local_attributes].freeze)
+      wrapper_module.send(:private_constant, :LOCAL_LOG_DATA)
 
-      # Define a private method in the wrapper module to access the closure variables
-      wrapper_module.define_method(:"__get_wrapped_logger_data_for_#{method_name}", &data_accessor)
-      wrapper_module.send(:private, :"__get_wrapped_logger_data_for_#{method_name}")
-
-      wrapper_module.module_eval <<-RUBY, __FILE__, __LINE__ + 1
-        def #{method_name}(#{signature})
-          wrapper_block, local_attributes = __get_wrapped_logger_data_for_#{method_name}
-
-          logger.tag(local_attributes) do
-            instance_exec(#{call_args}, &wrapper_block) if wrapper_block
-            super
-          end
-        end
-      RUBY
+      wrapper_code = build_add_log_attributes_wrapper_method(method_name, original_method.parameters)
+      wrapper_module.module_eval(wrapper_code, __FILE__, __LINE__)
+      wrapper_module.send(visibility, method_name) unless visibility == :public
 
       prepend wrapper_module
     end
@@ -175,66 +181,147 @@ module Lumberjack::LocalLogger
     # Get the local logger for the class. If no parent logger is defined, this will return nil.
     # The local logger is a fork of the parent logger with any configuration applied in the setup_logger block.
     #
+    # The local logger is cached, but it will be rebuilt if the logger it was forked from changes
+    # (i.e. the parent logger is changed on this class or a superclass, or the default logger changes).
+    #
     # @return [Lumberjack::ContextLogger, nil] The local logger for the class or nil if not defined.
     def logger
-      return @__local_logger_logger if defined?(@__local_logger_logger) && @__local_logger_logger
-
-      wrapped_logger = nil
-      if superclass.include?(Lumberjack::LocalLogger) && !(defined?(@__local_logger_parent_logger) && @__local_logger_parent_logger)
-        wrapped_logger = superclass.logger
-      end
-      wrapped_logger ||= parent_logger
-
+      wrapped_logger = __local_logger_wrapped_logger
       return nil unless wrapped_logger
 
-      logger = wrapped_logger.fork
-      if defined?(@__logger_setup_block) && @__logger_setup_block
-        @__logger_setup_block.call(logger)
-      end
+      cached_source, cached_logger = @__local_logger_logger if defined?(@__local_logger_logger)
+      return cached_logger if cached_logger && cached_source.equal?(wrapped_logger)
 
-      @__local_logger_logger = logger
-      logger
+      __local_logger_mutex.synchronize do
+        cached_source, cached_logger = @__local_logger_logger if defined?(@__local_logger_logger)
+        return cached_logger if cached_logger && cached_source.equal?(wrapped_logger)
+
+        logger = wrapped_logger.fork
+        if defined?(@__logger_setup_block) && @__logger_setup_block
+          @__logger_setup_block.call(logger)
+        end
+
+        @__local_logger_logger = [wrapped_logger, logger]
+        logger
+      end
     end
 
     private
 
-    # Builds the method signature and call args based on the method parameters.
-    # This is used internally by add_log_attributes to generate the wrapper method.
+    # The logger that the local logger should be forked from. This is the superclass local logger
+    # unless a parent logger has been explicitly set on this class.
     #
-    # @param parameters [Array<Array>] The parameters array from Method#parameters
-    # @return [Array<String>] An array containing [signature, call_args]
+    # @return [Lumberjack::ContextLogger, nil]
     # @api private
-    def build_add_log_attributes_to_method_signature_and_call_args(parameters)
-      signature_parts = []
-      call_parts = []
+    def __local_logger_wrapped_logger
+      wrapped_logger = nil
+      if superclass.include?(Lumberjack::LocalLogger) && !(defined?(@__local_logger_parent_logger) && @__local_logger_parent_logger)
+        wrapped_logger = superclass.logger
+      end
+      wrapped_logger || parent_logger
+    end
 
-      parameters.each do |type, name|
+    # Mutex guarding construction of the memoized local logger for this class.
+    #
+    # @return [Mutex]
+    # @api private
+    def __local_logger_mutex
+      @__local_logger_mutex ||= Mutex.new
+    end
+
+    # Builds the source code for the wrapper method defined by add_log_attributes.
+    #
+    # The wrapper preserves the wrapped method's signature. Optional positional and keyword
+    # parameters default to the UNSET sentinel so that arguments the caller omitted can be
+    # omitted from the call to super as well, allowing the wrapped method's own default
+    # values to apply. The optional block passed to add_log_attributes is called with the
+    # method arguments, with nil in place of any omitted optional arguments.
+    #
+    # @param method_name [Symbol] The name of the method being wrapped
+    # @param parameters [Array<Array>] The parameters array from Method#parameters
+    # @return [String] The Ruby source code for the wrapper method
+    # @api private
+    def build_add_log_attributes_wrapper_method(method_name, parameters)
+      unset = "Lumberjack::LocalLogger::UNSET"
+      signature_parts = []
+      exec_args = []
+      forward_lines = []
+      block_name = nil
+      positional = false
+      keywords = false
+
+      parameters.each_with_index do |(type, name), index|
+        # Parameters can be anonymous (e.g. def foo(*), C methods, or def foo(...)) in which
+        # case the reported name is nil or not a usable identifier. Substitute generated names.
+        name = nil unless name&.match?(/\A[A-Za-z_]\w*\z/)
+
         case type
         when :req
-          signature_parts << name.to_s
-          call_parts << name.to_s
+          name ||= "__ll_arg#{index}"
+          signature_parts << name
+          exec_args << name
+          forward_lines << "__ll_args << #{name}"
+          positional = true
         when :opt
-          signature_parts << "#{name} = nil"
-          call_parts << name.to_s
+          name ||= "__ll_arg#{index}"
+          signature_parts << "#{name} = #{unset}"
+          exec_args << "(#{unset}.equal?(#{name}) ? nil : #{name})"
+          forward_lines << "__ll_args << #{name} unless #{unset}.equal?(#{name})"
+          positional = true
         when :rest
+          name ||= "__ll_rest_args"
           signature_parts << "*#{name}"
-          call_parts << "*#{name}"
+          exec_args << "*#{name}"
+          forward_lines << "__ll_args.concat(#{name})"
+          positional = true
         when :keyreq
           signature_parts << "#{name}:"
-          call_parts << "#{name}: #{name}"
+          exec_args << "#{name}: #{name}"
+          forward_lines << "__ll_kwargs[:#{name}] = #{name}"
+          keywords = true
         when :key
-          signature_parts << "#{name}: nil"
-          call_parts << "#{name}: #{name}"
+          signature_parts << "#{name}: #{unset}"
+          exec_args << "#{name}: (#{unset}.equal?(#{name}) ? nil : #{name})"
+          forward_lines << "__ll_kwargs[:#{name}] = #{name} unless #{unset}.equal?(#{name})"
+          keywords = true
         when :keyrest
+          name ||= "__ll_kw_args"
           signature_parts << "**#{name}"
-          call_parts << "**#{name}"
+          exec_args << "**#{name}"
+          forward_lines << "__ll_kwargs.update(#{name})"
+          keywords = true
         when :block
-          signature_parts << "&#{name}"
-          call_parts << "&#{name}"
+          block_name = name
         end
       end
 
-      [signature_parts.join(", "), call_parts.join(", ")]
+      # Always accept and forward a block so that wrapped methods that yield still work.
+      block_name ||= "__ll_block"
+      signature_parts << "&#{block_name}"
+
+      setup_lines = []
+      setup_lines << "__ll_args = []" if positional
+      setup_lines << "__ll_kwargs = {}" if keywords
+
+      super_args = []
+      super_args << "*__ll_args" if positional
+      super_args << "**__ll_kwargs" if keywords
+      super_args << "&#{block_name}"
+
+      exec_args << "&__ll_wrapper_block"
+
+      <<~RUBY
+        def #{method_name}(#{signature_parts.join(", ")})
+          __ll_wrapper_block, __ll_local_attributes = LOCAL_LOG_DATA
+
+          logger.tag(__ll_local_attributes) do
+            instance_exec(#{exec_args.join(", ")}) if __ll_wrapper_block
+            #{setup_lines.join("\n    ")}
+            #{forward_lines.join("\n    ")}
+            super(#{super_args.join(", ")})
+          end
+        end
+      RUBY
     end
   end
 
